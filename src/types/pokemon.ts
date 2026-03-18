@@ -223,7 +223,25 @@ type Pokemon = S.Schema.Type<typeof Pokemon>;
 
 // Decode/encode helpers
 const decodePokemon = S.decodeUnknownSync(Pokemon);
-const decodePokemonEither = S.decodeUnknownEither(Pokemon);
+const decodePokemonEither = S.decodeUnknownExit(Pokemon);
 
-export { Pokemon, decodePokemon, decodePokemonEither };
+const supportsInlineImages =
+  process.env["TERM_PROGRAM"] === "iTerm.app" ||
+  process.env["TERM_PROGRAM"] === "WezTerm" ||
+  process.env["TERM_PROGRAM"] === "WarpTerminal" ||
+  process.env["TERM_PROGRAM"] === "Warp" ||
+  process.env["TERM"] === "xterm-kitty";
+
+// Sprite renders at 12 cols wide (96px image / 8px per cell) + 2 padding
+const SPRITE_COLS = 14;
+const SPRITE_ROWS = 6;
+
+export {
+  Pokemon,
+  decodePokemon,
+  decodePokemonEither,
+  supportsInlineImages,
+  SPRITE_COLS,
+  SPRITE_ROWS,
+};
 export type { Pokemon as PokemonType };
