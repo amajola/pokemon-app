@@ -1,5 +1,12 @@
 {
+  "$schema": "https://raw.githubusercontent.com/Effect-TS/language-service/refs/heads/main/schema.json",
   "compilerOptions": {
+    "plugins": [
+      {
+        "name": "@effect/language-service"
+      }
+    ],
+
     // Environment setup & latest features
     "lib": ["ESNext"],
     "target": "ESNext",
@@ -16,6 +23,8 @@
 
     // Best practices
     "strict": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
     "skipLibCheck": true,
     "noFallthroughCasesInSwitch": true,
     "noUncheckedIndexedAccess": true,
