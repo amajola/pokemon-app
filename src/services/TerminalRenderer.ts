@@ -1,8 +1,16 @@
-import { Console, Effect, Layer, ServiceMap } from "effect";
+import { Console, Effect, Layer, Match, Schema, ServiceMap } from "effect";
 import chalk, { type ChalkInstance } from "chalk";
 import ansiEscapes from "ansi-escapes";
 import type { Pokemon } from "../schema";
-import type { TimedPokemon } from "./FetchClient";
+import type {
+  FetchError,
+  FetchErrorRetry,
+  PokemonLookup,
+  TimedPokemon,
+} from "./FetchClient";
+import { HttpApiError } from "effect/unstable/httpapi";
+import { HttpClientError } from "effect/unstable/http";
+import { config } from "../cli";
 
 const supportsInlineSprites =
   process.env["TERM_PROGRAM"] === "iTerm.app" ||
@@ -65,7 +73,7 @@ const pokemonStatLabels: Readonly<Record<string, string>> = {
   speed: "SPD",
 };
 
-const capitalizePokemonName = (name: string) =>
+export const capitalizePokemonName = (name: string) =>
   name.charAt(0).toLocaleUpperCase() + name.slice(1);
 
 const formatPokemonType = (name: string) => {
@@ -78,10 +86,7 @@ const formatPokemonType = (name: string) => {
 const getPokemonStatColor = (value: number) =>
   value >= 100 ? chalk.green : value >= 60 ? chalk.yellow : chalk.red;
 
-const formatPokemonStat = ({
-  stat,
-  base_stat,
-}: Pokemon["stats"][number]) => {
+const formatPokemonStat = ({ stat, base_stat }: Pokemon["stats"][number]) => {
   const label = pokemonStatLabels[stat.name] ?? stat.name;
   const filled = Math.round((base_stat / 255) * 20);
   const bar =
@@ -96,7 +101,9 @@ const renderInlineSprite = (url: string | null): Effect.Effect<string> => {
     return Effect.succeed("");
   }
 
-  return Effect.tryPromise(() => fetch(url).then((response) => response.arrayBuffer())).pipe(
+  return Effect.tryPromise(() =>
+    fetch(url).then((response) => response.arrayBuffer()),
+  ).pipe(
     Effect.map((buffer) => {
       const base64 = Buffer.from(buffer).toString("base64");
 
@@ -106,7 +113,10 @@ const renderInlineSprite = (url: string | null): Effect.Effect<string> => {
   );
 };
 
-const formatPokemon = ({ durationMs, pokemon }: TimedPokemon, sprite: string) => {
+const formatPokemon = (
+  { durationMs, pokemon }: TimedPokemon,
+  sprite: string,
+) => {
   const id = chalk.gray(`#${String(pokemon.id).padStart(4, "0")}`);
   const name = chalk.bold.white(capitalizePokemonName(pokemon.name));
   const types = pokemon.types
@@ -138,17 +148,65 @@ const formatPokemon = ({ durationMs, pokemon }: TimedPokemon, sprite: string) =>
   return `\n${header}\n\n\n${sprite}\r${ansiEscapes.cursorUp(spriteRows)}${statSection}${ansiEscapes.cursorDown(totalRows)}\n`;
 };
 
+const displayName = (pokemonId: PokemonLookup) =>
+  Match.value(pokemonId).pipe(
+    Match.when(
+      Schema.is(Schema.Number),
+      (id) => `#${`${String(id).padStart(3, "0")}`}`,
+    ),
+    Match.when(Schema.is(Schema.String), (id) => capitalizePokemonName(id)),
+    Match.exhaustive,
+  );
+
+export const formatError = (error: HttpClientError.HttpClientError) =>
+  Match.value(error.response?.status).pipe(
+    Match.when(404, () =>
+      Console.error(
+        `\n${chalk.bgRed.white.bold(" 404 ")} ${chalk.red("Pokemon not found")}  ${chalk.dim(error.request.url)}\n`,
+      ),
+    ),
+    Match.when(0, () =>
+      Console.error(
+        `\n${chalk.bgYellow.black.bold(" NET ")} ${chalk.yellow("Could not reach server")}  ${chalk.dim(error.request.url)}\n`,
+      ),
+    ),
+    Match.orElse(() =>
+      Console.error(
+        `\n${chalk.bgRed.white.bold(" HTTP ")} ${chalk.red(error.message)}\n`,
+      ),
+    ),
+  );
+
 export class TerminalRenderer extends ServiceMap.Service<
   TerminalRenderer,
   {
+    readonly showWhileRetry: (
+      error: FetchError,
+      attempt: number,
+      retries: number,
+    ) => Effect.Effect<void>;
+    readonly showRetryError: (error: FetchErrorRetry) => Effect.Effect<void>;
     readonly showPokemon: (timedPokemon: TimedPokemon) => Effect.Effect<void>;
+    readonly showHttpError: (
+      error: HttpClientError.HttpClientError,
+    ) => Effect.Effect<void>;
   }
 >()("@pokemon-app/TerminalRenderer") {}
 
 export const terminalRendererLayer = Layer.sync(TerminalRenderer, () => ({
-  showPokemon: Effect.fn("TerminalRenderer.showPokemon")(function* (timedPokemon: TimedPokemon) {
-    const sprite = yield* renderInlineSprite(timedPokemon.pokemon.sprites.front_default);
-
-    yield* Console.log(formatPokemon(timedPokemon, sprite));
-  }),
+  showWhileRetry: (error, attempt, retries) =>
+    Console.error(
+      `${chalk.bgCyan.black.bold(" RETRY ")} ${chalk.cyan(displayName(error.pokemonId))}  ${chalk.dim(`attempt ${attempt}/${retries}`)}  ${chalk.gray("Chaos!")}`,
+    ),
+  showRetryError: (error) =>
+    Console.error(
+      `${chalk.bgRed.white.bold(" FAIL ")} ${chalk.red(displayName(error.pokemonId))}  ${chalk.dim(`gave up after ${config.retries} retries`)}`,
+    ),
+  showHttpError: (error) => formatError(error),
+  showPokemon: (timedPokemon: TimedPokemon) =>
+    renderInlineSprite(timedPokemon.pokemon.sprites.front_default).pipe(
+      Effect.flatMap((sprite) =>
+        Console.log(formatPokemon(timedPokemon, sprite)),
+      ),
+    ),
 }));

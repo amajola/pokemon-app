@@ -1,13 +1,23 @@
 import { Argument, Command, Flag } from "effect/unstable/cli";
-import { Duration, Effect, Option, Stream } from "effect";
+import { Duration, Effect, Option, Ref, Stream } from "effect";
 import {
   FetchClient,
+  withExponentialBackoff,
   type PokemonLookup,
-  type TimedPokemon,
 } from "./services/FetchClient";
-import { TerminalRenderer } from "./services/TerminalRenderer";
+import {
+  capitalizePokemonName,
+  formatError,
+  TerminalRenderer,
+} from "./services/TerminalRenderer";
+import { Pokemon } from "./schema";
+import { SchemaError } from "effect/Schema";
+import { HttpClientError } from "effect/unstable/http/HttpClientError";
 
 const pokemonGenerations = ["1", "2", "3", "4", "5"] as const;
+export const config = {
+  retries: 3,
+};
 
 type PokemonGeneration = (typeof pokemonGenerations)[number];
 
@@ -17,7 +27,10 @@ const pokemonGenerationRanges = {
   "3": { start: 252, end: 386 },
   "4": { start: 387, end: 493 },
   "5": { start: 494, end: 649 },
-} satisfies Record<PokemonGeneration, { readonly start: number; readonly end: number }>;
+} satisfies Record<
+  PokemonGeneration,
+  { readonly start: number; readonly end: number }
+>;
 
 const getPokemonLookupsForGeneration = (
   generation: PokemonGeneration,
@@ -30,19 +43,26 @@ const getPokemonLookupsForGeneration = (
   );
 };
 
-const streamPokemonLookups = (lookups: ReadonlyArray<PokemonLookup>) =>
+const streamPokemonLookups = (
+  lookups: ReadonlyArray<PokemonLookup>,
+  concurrency: number,
+) =>
   Stream.fromIterable(lookups).pipe(
     Stream.mapEffect(
       (lookup) =>
-        Effect.timed(FetchClient.use((fetchClient) => fetchClient.fetchPokemon(lookup))).pipe(
-          Effect.map(
-            ([duration, pokemon]): TimedPokemon => ({
-              durationMs: Duration.toMillis(duration),
-              pokemon,
-            }),
+        Ref.make(0).pipe(
+          Effect.flatMap((attempts) =>
+            withExponentialBackoff(
+              FetchClient.use((c) => c.fetchPokemon(lookup)),
+              attempts,
+            ).pipe(Effect.timed),
           ),
+          Effect.map(([duration, pokemon]) => ({
+            durationMs: Duration.toMillis(duration),
+            pokemon,
+          })),
         ),
-      { concurrency: 10 },
+      { concurrency },
     ),
   );
 
@@ -50,6 +70,17 @@ const pokemon = Argument.string("pokemon").pipe(Argument.variadic());
 const generation = Flag.choice("gen", pokemonGenerations).pipe(
   Flag.withAlias("g"),
   Flag.optional,
+);
+const concurrency = Flag.integer("concurrency").pipe(
+  Flag.withAlias("c"),
+  Flag.withDefault(10),
+  Flag.mapTryCatch(
+    (n) => {
+      if (n < 1 || n > 30) throw new Error("concurrency must be between 1 and 30");
+      return n;
+    },
+    (e) => String(e),
+  ),
 );
 
 const resolvePokemonLookups = ({
@@ -72,17 +103,21 @@ const resolvePokemonLookups = ({
 
 const command = Command.make(
   "pokemonfetcher",
-  { pokemon, generation },
-  ({ pokemon, generation }) =>
+  { pokemon, generation, concurrency },
+  ({ pokemon, generation, concurrency }) =>
     resolvePokemonLookups({ pokemon, generation }).pipe(
       Effect.flatMap((lookups) =>
-        streamPokemonLookups(lookups).pipe(
+        streamPokemonLookups(lookups, concurrency).pipe(
           Stream.tap((timedPokemon) =>
             TerminalRenderer.use((terminalRenderer) =>
               terminalRenderer.showPokemon(timedPokemon),
             ),
           ),
           Stream.runDrain,
+          Effect.catchTag("FetchErrorRetry", (error) =>
+            TerminalRenderer.use((t) => t.showRetryError(error)),
+          ),
+          Effect.catchTag("HttpClientError", (error) => formatError(error)),
         ),
       ),
     ),
