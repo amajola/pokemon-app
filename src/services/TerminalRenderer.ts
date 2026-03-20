@@ -122,7 +122,7 @@ const formatPokemon = (
   const types = pokemon.types
     .map((pokemonType) => formatPokemonType(pokemonType.type.name))
     .join(chalk.gray("  │  "));
-  const timing = `${chalk.gray("⏲️").padEnd(14)} ${chalk.dim(`${durationMs}ms`)}`;
+  const timing = `${chalk.gray("⏲️").padEnd(14)} ${chalk.dim(`${durationMs.toFixed(2)}ms`)}`;
   const header = `${timing}  ${id} ${name}  ${types}`;
   const statLines = pokemon.stats.map(formatPokemonStat);
 
