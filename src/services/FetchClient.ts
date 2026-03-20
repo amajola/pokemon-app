@@ -2,7 +2,6 @@ import {
   Effect,
   Layer,
   Match,
-  pipe,
   Random,
   Ref,
   Schedule,
@@ -113,7 +112,7 @@ export const withExponentialBackoff = <R>(
     ),
   );
 
-const fetchPokemonLive = (lookup: PokemonLookup) =>
+const fetchPokemonLive = (lookup: PokemonLookup, chaos: boolean) =>
   Effect.service(HttpClient.HttpClient)
     .pipe(
       Effect.flatMap((client) =>
@@ -125,7 +124,9 @@ const fetchPokemonLive = (lookup: PokemonLookup) =>
     .pipe(
       Effect.catchTag("HttpClientError", (error) => Effect.fail(error)),
       Effect.flatMap(HttpClientResponse.schemaBodyJson(Pokemon)),
-      Effect.flatMap(withChaos(lookup)),
+      Effect.flatMap((pokemon) =>
+        chaos ? withChaos(lookup)(pokemon) : Effect.succeed(pokemon),
+      ),
     );
 
 export class FetchClient extends ServiceMap.Service<
@@ -133,6 +134,7 @@ export class FetchClient extends ServiceMap.Service<
   {
     readonly fetchPokemon: (
       lookup: PokemonLookup,
+      chaos: boolean,
     ) => Effect.Effect<
       PokemonType,
       | HttpClientError.HttpClientError
@@ -147,8 +149,8 @@ export const fetchClientLayer = Layer.effect(
   FetchClient,
   Effect.service(HttpClient.HttpClient).pipe(
     Effect.map((client) => ({
-      fetchPokemon: (lookup: PokemonLookup) =>
-        fetchPokemonLive(lookup).pipe(
+      fetchPokemon: (lookup: PokemonLookup, chaos: boolean) =>
+        fetchPokemonLive(lookup, chaos).pipe(
           Effect.provideService(HttpClient.HttpClient, client),
         ),
     })),

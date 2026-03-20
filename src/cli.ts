@@ -46,6 +46,7 @@ const getPokemonLookupsForGeneration = (
 const streamPokemonLookups = (
   lookups: ReadonlyArray<PokemonLookup>,
   concurrency: number,
+  chaos: boolean,
 ) =>
   Stream.fromIterable(lookups).pipe(
     Stream.mapEffect(
@@ -71,12 +72,17 @@ const generation = Flag.choice("gen", pokemonGenerations).pipe(
   Flag.withAlias("g"),
   Flag.optional,
 );
+const chaos = Flag.boolean("chaos").pipe(
+  Flag.withAlias("x"),
+  Flag.withDefault(false),
+);
 const concurrency = Flag.integer("concurrency").pipe(
   Flag.withAlias("c"),
-  Flag.withDefault(10),
+  Flag.withDefault(1),
   Flag.mapTryCatch(
     (n) => {
-      if (n < 1 || n > 30) throw new Error("concurrency must be between 1 and 30");
+      if (n < 1 || n > 30)
+        throw new Error("concurrency must be between 1 and 30");
       return n;
     },
     (e) => String(e),
@@ -103,20 +109,21 @@ const resolvePokemonLookups = ({
 
 const command = Command.make(
   "pokemonfetcher",
-  { pokemon, generation, concurrency },
-  ({ pokemon, generation, concurrency }) =>
+  { pokemon, generation, concurrency, chaos },
+  ({ pokemon, generation, concurrency, chaos }) =>
     resolvePokemonLookups({ pokemon, generation }).pipe(
       Effect.flatMap((lookups) =>
-        streamPokemonLookups(lookups, concurrency).pipe(
+        streamPokemonLookups(lookups, concurrency, chaos).pipe(
           Stream.tap((timedPokemon) =>
-            TerminalRenderer.use((terminalRenderer) =>
-              terminalRenderer.showPokemon(timedPokemon),
-            ),
+            Option.match(timedPokemon, {
+              onNone: () => Effect.void,
+              onSome: (ti) =>
+                TerminalRenderer.use((terminalRenderer) =>
+                  terminalRenderer.showPokemon(ti),
+                ),
+            }),
           ),
           Stream.runDrain,
-          Effect.catchTag("FetchErrorRetry", (error) =>
-            TerminalRenderer.use((t) => t.showRetryError(error)),
-          ),
           Effect.catchTag("HttpClientError", (error) => formatError(error)),
         ),
       ),
